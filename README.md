@@ -1,2 +1,1 @@
-# python-autofix-pro
-python-autofix-pro
+# Python Autofix Pro (GitHub App)

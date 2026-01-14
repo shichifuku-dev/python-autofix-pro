@@ -20,7 +20,7 @@ type PullRequestPayload = {
     head?: {
       sha?: string;
       ref?: string;
-      repo?: { full_name?: string };
+      repo?: { full_name?: string } | null;
     };
     html_url?: string;
   };

@@ -20,6 +20,7 @@ describe("buildCheckOutput", () => {
 describe("createCheckRun", () => {
   it("creates a check run with expected payload", async () => {
     const createMock = vi.fn().mockResolvedValue({ data: { id: 99 } });
+    const infoSpy = vi.spyOn(console, "info").mockImplementation(() => undefined);
     const octokit = {
       rest: {
         checks: {
@@ -33,6 +34,8 @@ describe("createCheckRun", () => {
       repo: "demo",
       name: "CI/check",
       headSha: "abc123",
+      installationId: 12345,
+      action: "opened",
       status: "in_progress",
       output: {
         title: "Python Autofix Pro",
@@ -54,5 +57,7 @@ describe("createCheckRun", () => {
         text: "",
       },
     });
+    expect(infoSpy).toHaveBeenCalled();
+    infoSpy.mockRestore();
   });
 });

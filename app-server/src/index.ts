@@ -35,6 +35,50 @@ const supportedActions = new Set([
 
 const supportedCheckSuiteActions = new Set(["requested", "rerequested"]);
 
+const logCheckCreateError = (error: unknown, context: {
+  owner: string;
+  repo: string;
+  headSha: string;
+  installationId: number;
+  action: string;
+  checkName: string;
+}): void => {
+  const err = error as {
+    status?: number;
+    message?: string;
+    response?: { data?: unknown };
+  };
+  console.error("checks.create failed.", {
+    ...context,
+    status: err?.status,
+    message: err?.message,
+    response: err?.response?.data,
+  });
+};
+
+const safePostPullRequestComment = async (
+  octokit: import("@octokit/rest").Octokit,
+  owner: string,
+  repo: string,
+  pullNumber: number,
+  body: string,
+  context: { action: string; installationId: number; headSha: string },
+): Promise<void> => {
+  try {
+    await postPullRequestComment(octokit, owner, repo, pullNumber, body);
+  } catch (error) {
+    console.error("postPullRequestComment failed.", {
+      owner,
+      repo,
+      pullNumber,
+      headSha: context.headSha,
+      installationId: context.installationId,
+      action: context.action,
+      error,
+    });
+  }
+};
+
 const handlePullRequestEvent = async (payload: PullRequestEvent): Promise<void> => {
   const action = payload.action;
   if (!action || !supportedActions.has(action)) {
@@ -83,6 +127,9 @@ const handlePullRequestEvent = async (payload: PullRequestEvent): Promise<void> 
           owner: context.owner,
           repo: context.repo,
           checkRunId,
+          headSha: context.headSha,
+          installationId,
+          action,
           conclusion: override?.[name] ?? conclusion,
           output,
         });
@@ -92,15 +139,29 @@ const handlePullRequestEvent = async (payload: PullRequestEvent): Promise<void> 
 
   try {
     for (const name of checkRuns) {
-      const checkRunId = await createCheckRun(octokit, {
-        owner: context.owner,
-        repo: context.repo,
-        name,
-        headSha: context.headSha,
-        status: "in_progress",
-        output: inProgressOutput,
-      });
-      checkRunIds.set(name, checkRunId);
+      try {
+        const checkRunId = await createCheckRun(octokit, {
+          owner: context.owner,
+          repo: context.repo,
+          name,
+          headSha: context.headSha,
+          installationId,
+          action,
+          status: "in_progress",
+          output: inProgressOutput,
+        });
+        checkRunIds.set(name, checkRunId);
+      } catch (error) {
+        logCheckCreateError(error, {
+          owner: context.owner,
+          repo: context.repo,
+          headSha: context.headSha,
+          installationId,
+          action,
+          checkName: name,
+        });
+        return;
+      }
     }
 
     const files = await listPullRequestFiles(
@@ -134,41 +195,70 @@ const handlePullRequestEvent = async (payload: PullRequestEvent): Promise<void> 
       commitMessage: "chore(autofix): python formatting",
     });
 
-    await completeCheckRun(octokit, {
-      owner: context.owner,
-      repo: context.repo,
-      checkRunId: checkRunIds.get("CI/check") ?? 0,
-      conclusion: autofixResult.checkConclusion,
-      output: {
-        title: "Python Autofix Pro",
-        summary: autofixResult.summary,
-        text: autofixResult.details,
-      },
-    });
+    const checkRunId = checkRunIds.get("CI/check");
+    if (checkRunId) {
+      await completeCheckRun(octokit, {
+        owner: context.owner,
+        repo: context.repo,
+        checkRunId,
+        headSha: context.headSha,
+        installationId,
+        action,
+        conclusion: autofixResult.checkConclusion,
+        output: {
+          title: "Python Autofix Pro",
+          summary: autofixResult.summary,
+          text: autofixResult.details,
+        },
+      });
+    } else {
+      console.warn("Missing check_run_id for CI/check; skipping update.", {
+        owner: context.owner,
+        repo: context.repo,
+        headSha: context.headSha,
+        installationId,
+        action,
+      });
+    }
 
-    await completeCheckRun(octokit, {
-      owner: context.owner,
-      repo: context.repo,
-      checkRunId: checkRunIds.get("CI/autofix") ?? 0,
-      conclusion: autofixResult.autofixConclusion,
-      output: {
-        title: "Python Autofix Pro",
-        summary: autofixResult.summary,
-        text: autofixResult.details,
-      },
-    });
+    const autofixCheckRunId = checkRunIds.get("CI/autofix");
+    if (autofixCheckRunId) {
+      await completeCheckRun(octokit, {
+        owner: context.owner,
+        repo: context.repo,
+        checkRunId: autofixCheckRunId,
+        headSha: context.headSha,
+        installationId,
+        action,
+        conclusion: autofixResult.autofixConclusion,
+        output: {
+          title: "Python Autofix Pro",
+          summary: autofixResult.summary,
+          text: autofixResult.details,
+        },
+      });
+    } else {
+      console.warn("Missing check_run_id for CI/autofix; skipping update.", {
+        owner: context.owner,
+        repo: context.repo,
+        headSha: context.headSha,
+        installationId,
+        action,
+      });
+    }
 
     if (autofixResult.appliedFixes || autofixResult.checkConclusion === "failure") {
       const docsLine = config.docsUrl
         ? `\n\nDocs: ${config.docsUrl}`
         : "";
       const commentBody = `### Python Autofix Pro\n\n${autofixResult.summary}\n\nPR: ${context.htmlUrl}${docsLine}`;
-      await postPullRequestComment(
+      await safePostPullRequestComment(
         octokit,
         context.owner,
         context.repo,
         context.pullNumber,
         commentBody,
+        { action, installationId, headSha: context.headSha },
       );
     }
   } catch (error) {
@@ -187,12 +277,13 @@ const handlePullRequestEvent = async (payload: PullRequestEvent): Promise<void> 
     const docsLine = config.docsUrl
       ? `\n\nDocs: ${config.docsUrl}`
       : "";
-    await postPullRequestComment(
+    await safePostPullRequestComment(
       octokit,
       context.owner,
       context.repo,
       context.pullNumber,
       `### Python Autofix Pro\n\n${summary}${docsLine}`,
+      { action, installationId, headSha: context.headSha },
     );
   }
 };

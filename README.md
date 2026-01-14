@@ -55,6 +55,7 @@ When there are no Python changes, both are marked as `success` with the output: 
 | `WEBHOOK_SECRET` | Webhook secret configured in GitHub App |
 | `PORT` | Server port (default: 3000) |
 | `DOCS_URL` | Optional URL to include in PR comments |
+| `PRO_INSTALLATION_IDS` | Comma-separated installation IDs granted the Pro plan |
 
 ### GitHub App permissions
 
@@ -79,6 +80,14 @@ Example (Render/Fly/Cloud Run):
 - Run `npm --prefix app-server install`.
 - Build via `npm --prefix app-server run build`.
 - Start via `npm --prefix app-server start`.
+
+## Troubleshooting: why checks might not appear
+
+If `CI/check` or `CI/autofix` are missing in the PR UI, verify that the app is using an
+Octokit REST client that supports `octokit.rest.checks.*` and `octokit.rest.issues.*`.
+GitHub App helpers can return a core client without REST endpoints, which leads to
+`octokit.rest` being undefined. The fix is to create an installation access token and
+instantiate `@octokit/rest` with it before creating or updating check runs.
 
 ## Local development
 

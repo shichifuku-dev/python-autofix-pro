@@ -1,5 +1,6 @@
 import express from "express";
 import { App } from "@octokit/app";
+import { Octokit } from "@octokit/rest";
 import { Webhooks, createNodeMiddleware } from "@octokit/webhooks";
 import type { CheckSuiteEvent, PullRequestEvent } from "@octokit/webhooks-types";
 import { loadConfig } from "./config.js";
@@ -15,6 +16,7 @@ import {
 } from "./github/pullRequests.js";
 import { runAutofix } from "./autofix/runner.js";
 import { postPullRequestComment } from "./github/comments.js";
+import { getPlanForInstallation, type InstallationPlan } from "./utils/plan.js";
 
 const config = loadConfig();
 const app = new App({
@@ -34,6 +36,11 @@ const supportedActions = new Set([
 ]);
 
 const supportedCheckSuiteActions = new Set(["requested", "rerequested"]);
+const lastCommentedShaByPull = new Map<string, string>();
+
+const getPullKey = (owner: string, repo: string, pullNumber: number): string => {
+  return `${owner}/${repo}#${pullNumber}`;
+};
 
 const logCheckCreateError = (error: unknown, context: {
   owner: string;
@@ -57,15 +64,22 @@ const logCheckCreateError = (error: unknown, context: {
 };
 
 const safePostPullRequestComment = async (
-  octokit: import("@octokit/rest").Octokit,
+  octokit: Octokit,
   owner: string,
   repo: string,
   pullNumber: number,
   body: string,
   context: { action: string; installationId: number; headSha: string },
 ): Promise<void> => {
+  const pullKey = getPullKey(owner, repo, pullNumber);
+  const lastCommentedSha = lastCommentedShaByPull.get(pullKey);
+  if (lastCommentedSha === context.headSha) {
+    return;
+  }
+
   try {
     await postPullRequestComment(octokit, owner, repo, pullNumber, body);
+    lastCommentedShaByPull.set(pullKey, context.headSha);
   } catch (error) {
     console.error("postPullRequestComment failed.", {
       owner,
@@ -77,6 +91,37 @@ const safePostPullRequestComment = async (
       error,
     });
   }
+};
+
+const createInstallationOctokit = async (
+  installationId: number,
+): Promise<{ octokit: Octokit; token: string }> => {
+  const tokenResponse = await app.octokit.request(
+    "POST /app/installations/{installation_id}/access_tokens",
+    { installation_id: installationId },
+  );
+  const token = tokenResponse.data.token;
+  return { octokit: new Octokit({ auth: token }), token };
+};
+
+const logUsage = (params: {
+  owner: string;
+  repo: string;
+  pullNumber: number;
+  headSha: string;
+  action: string;
+  plan: InstallationPlan;
+  result: string;
+}): void => {
+  console.info("usage.pr_event", {
+    owner: params.owner,
+    repo: params.repo,
+    pullNumber: params.pullNumber,
+    headSha: params.headSha,
+    action: params.action,
+    plan: params.plan,
+    result: params.result,
+  });
 };
 
 const handlePullRequestEvent = async (payload: PullRequestEvent): Promise<void> => {
@@ -102,8 +147,9 @@ const handlePullRequestEvent = async (payload: PullRequestEvent): Promise<void> 
     return;
   }
 
-  const octokit =
-    (await app.getInstallationOctokit(installationId)) as unknown as import("@octokit/rest").Octokit;
+  const plan = getPlanForInstallation(installationId);
+  let octokit: Octokit | null = null;
+  let installationToken: string | null = null;
 
   const inProgressOutput = {
     title: "Python Autofix Pro",
@@ -112,18 +158,23 @@ const handlePullRequestEvent = async (payload: PullRequestEvent): Promise<void> 
 
   const checkRunIds = new Map<CheckRunName, number>();
   const checkRuns: CheckRunName[] = ["CI/check", "CI/autofix"];
+  let result = "started";
   const finalizeCheckRuns = async (
     conclusion: "success" | "failure" | "neutral",
     output: { title: string; summary: string; text?: string },
     override?: Partial<Record<CheckRunName, "success" | "failure" | "neutral">>,
   ): Promise<void> => {
+    if (!octokit) {
+      return;
+    }
+    const authedOctokit = octokit;
     await Promise.all(
       checkRuns.map((name) => {
         const checkRunId = checkRunIds.get(name);
         if (!checkRunId) {
           return Promise.resolve();
         }
-        return completeCheckRun(octokit, {
+        return completeCheckRun(authedOctokit, {
           owner: context.owner,
           repo: context.repo,
           checkRunId,
@@ -138,9 +189,17 @@ const handlePullRequestEvent = async (payload: PullRequestEvent): Promise<void> 
   };
 
   try {
+    const installationOctokit = await createInstallationOctokit(installationId);
+    octokit = installationOctokit.octokit;
+    installationToken = installationOctokit.token;
+    if (!octokit) {
+      throw new Error("Missing Octokit instance.");
+    }
+    const authedOctokit = octokit;
+
     for (const name of checkRuns) {
       try {
-        const checkRunId = await createCheckRun(octokit, {
+        const checkRunId = await createCheckRun(authedOctokit, {
           owner: context.owner,
           repo: context.repo,
           name,
@@ -160,12 +219,13 @@ const handlePullRequestEvent = async (payload: PullRequestEvent): Promise<void> 
           action,
           checkName: name,
         });
+        result = "check_create_failed";
         return;
       }
     }
 
     const files = await listPullRequestFiles(
-      octokit,
+      authedOctokit,
       context.owner,
       context.repo,
       context.pullNumber,
@@ -178,14 +238,13 @@ const handlePullRequestEvent = async (payload: PullRequestEvent): Promise<void> 
         summary,
         text: summary,
       });
+      result = "skipped_no_python";
       return;
     }
 
-    const installationTokenResponse =
-      await octokit.rest.apps.createInstallationAccessToken({
-        installation_id: installationId,
-      });
-    const installationToken = installationTokenResponse.data.token;
+    if (!installationToken) {
+      throw new Error("Missing installation access token.");
+    }
 
     const autofixResult = await runAutofix({
       token: installationToken,
@@ -197,7 +256,7 @@ const handlePullRequestEvent = async (payload: PullRequestEvent): Promise<void> 
 
     const checkRunId = checkRunIds.get("CI/check");
     if (checkRunId) {
-      await completeCheckRun(octokit, {
+      await completeCheckRun(authedOctokit, {
         owner: context.owner,
         repo: context.repo,
         checkRunId,
@@ -223,7 +282,7 @@ const handlePullRequestEvent = async (payload: PullRequestEvent): Promise<void> 
 
     const autofixCheckRunId = checkRunIds.get("CI/autofix");
     if (autofixCheckRunId) {
-      await completeCheckRun(octokit, {
+      await completeCheckRun(authedOctokit, {
         owner: context.owner,
         repo: context.repo,
         checkRunId: autofixCheckRunId,
@@ -253,7 +312,7 @@ const handlePullRequestEvent = async (payload: PullRequestEvent): Promise<void> 
         : "";
       const commentBody = `### Python Autofix Pro\n\n${autofixResult.summary}\n\nPR: ${context.htmlUrl}${docsLine}`;
       await safePostPullRequestComment(
-        octokit,
+        authedOctokit,
         context.owner,
         context.repo,
         context.pullNumber,
@@ -261,6 +320,7 @@ const handlePullRequestEvent = async (payload: PullRequestEvent): Promise<void> 
         { action, installationId, headSha: context.headSha },
       );
     }
+    result = autofixResult.checkConclusion === "failure" ? "completed_failure" : "completed_success";
   } catch (error) {
     console.error("pull_request handler failed.", { action, error });
     const summary = "Autofix failed unexpectedly. See logs for details.";
@@ -277,14 +337,27 @@ const handlePullRequestEvent = async (payload: PullRequestEvent): Promise<void> 
     const docsLine = config.docsUrl
       ? `\n\nDocs: ${config.docsUrl}`
       : "";
-    await safePostPullRequestComment(
-      octokit,
-      context.owner,
-      context.repo,
-      context.pullNumber,
-      `### Python Autofix Pro\n\n${summary}${docsLine}`,
-      { action, installationId, headSha: context.headSha },
-    );
+    if (octokit) {
+      await safePostPullRequestComment(
+        octokit,
+        context.owner,
+        context.repo,
+        context.pullNumber,
+        `### Python Autofix Pro\n\n${summary}${docsLine}`,
+        { action, installationId, headSha: context.headSha },
+      );
+    }
+    result = "error";
+  } finally {
+    logUsage({
+      owner: context.owner,
+      repo: context.repo,
+      pullNumber: context.pullNumber,
+      headSha: context.headSha,
+      action,
+      plan,
+      result,
+    });
   }
 };
 

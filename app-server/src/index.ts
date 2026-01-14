@@ -15,6 +15,7 @@ import {
   containsPythonChanges,
 } from "./github/pullRequests.js";
 import { runAutofix } from "./autofix/runner.js";
+import { runCommand } from "./utils/exec.js";
 import { postPullRequestComment } from "./github/comments.js";
 import { getPlanForInstallation, type InstallationPlan } from "./utils/plan.js";
 
@@ -100,6 +101,18 @@ const truncate = (value: string, maxLength = 2000): string => {
     return value;
   }
   return `${value.slice(0, maxLength)}...<truncated>`;
+};
+
+const logRuffVersion = async (): Promise<void> => {
+  const result = await runCommand("ruff", ["--version"]);
+  if (result.code === 0) {
+    console.log(`ruff --version: ${result.stdout.trim()}`);
+    return;
+  }
+
+  console.warn("ruff not available on PATH.", {
+    stderr: result.stderr.trim(),
+  });
 };
 
 const safeSerialize = (value: unknown): string => {
@@ -602,4 +615,5 @@ if (webhookPath !== "/webhooks") {
 
 server.listen(config.port, () => {
   console.log(`Python Autofix Pro listening on :${config.port}`);
+  void logRuffVersion();
 });

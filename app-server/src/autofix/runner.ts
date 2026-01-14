@@ -61,16 +61,17 @@ const isBlackConfigured = (repoPath: string): boolean => {
 };
 
 const ensureRuff = async (cwd: string, logs: string[]): Promise<void> => {
-  const versionResult = await runCommand("python", ["-m", "ruff", "--version"], {
-    cwd,
-  });
+  const versionResult = await runCommand("ruff", ["--version"], { cwd });
   if (versionResult.code === 0) {
     logs.push(`ruff detected: ${versionResult.stdout.trim()}`);
     return;
   }
 
-  logs.push("ruff not found. Installing ruff via pip.");
-  await runRequiredCommand("python", ["-m", "pip", "install", "ruff"], { cwd });
+  if (versionResult.stderr.trim()) {
+    logs.push(versionResult.stderr.trim());
+  }
+  logs.push("ruff not found in PATH. Ensure the server image includes ruff.");
+  throw new Error("ruff is required but missing.");
 };
 
 const ensureBlack = async (cwd: string, logs: string[]): Promise<void> => {
@@ -87,7 +88,7 @@ const ensureBlack = async (cwd: string, logs: string[]): Promise<void> => {
 };
 
 const runRuffFormatting = async (cwd: string, logs: string[]) => {
-  const formatResult = await runCommand("python", ["-m", "ruff", "format", "."], {
+  const formatResult = await runCommand("ruff", ["format", "."], {
     cwd,
   });
   logs.push(formatResult.stdout.trim());
@@ -97,8 +98,8 @@ const runRuffFormatting = async (cwd: string, logs: string[]) => {
   }
 
   const checkFixResult = await runCommand(
-    "python",
-    ["-m", "ruff", "check", ".", "--fix"],
+    "ruff",
+    ["check", ".", "--fix"],
     { cwd },
   );
   logs.push(checkFixResult.stdout.trim());
@@ -108,14 +109,12 @@ const runRuffFormatting = async (cwd: string, logs: string[]) => {
 };
 
 const runRuffVerification = async (cwd: string, logs: string[]) => {
-  const formatCheck = await runCommand(
-    "python",
-    ["-m", "ruff", "format", "--check", "."],
-    { cwd },
-  );
+  const formatCheck = await runCommand("ruff", ["format", "--check", "."], {
+    cwd,
+  });
   logs.push(formatCheck.stdout.trim());
 
-  const lintCheck = await runCommand("python", ["-m", "ruff", "check", "."], {
+  const lintCheck = await runCommand("ruff", ["check", "."], {
     cwd,
   });
   logs.push(lintCheck.stdout.trim());

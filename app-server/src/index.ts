@@ -181,7 +181,16 @@ const server = express();
 server.get("/health", (_req, res) => {
   res.status(200).json({ status: "ok" });
 });
-server.use(createNodeMiddleware(webhooks, { path: "/webhooks" }));
+const webhookPath = process.env.WEBHOOK_PATH || "/api/webhook";
+
+// Primary (Render/GitHub Appで設定しているパス)
+server.use(createNodeMiddleware(webhooks, { path: webhookPath }));
+
+// 互換用（ローカルや過去設定で /webhooks を叩いても動くように残す）
+if (webhookPath !== "/webhooks") {
+  server.use(createNodeMiddleware(webhooks, { path: "/webhooks" }));
+}
+
 
 server.listen(config.port, () => {
   console.log(`Python Autofix Pro listening on :${config.port}`);

@@ -19,6 +19,19 @@ export type AutofixResult = {
   appliedFixes: boolean;
 };
 
+export class AutofixError extends Error {
+  readonly logs: string[];
+
+  constructor(message: string, logs: string[], cause?: unknown) {
+    super(message);
+    this.name = "AutofixError";
+    this.logs = logs;
+    if (cause instanceof Error) {
+      this.cause = cause;
+    }
+  }
+}
+
 const isBlackConfigured = (repoPath: string): boolean => {
   const pyprojectPath = path.join(repoPath, "pyproject.toml");
   if (fs.existsSync(pyprojectPath)) {
@@ -195,14 +208,9 @@ export const runAutofix = async (input: AutofixInput): Promise<AutofixResult> =>
       appliedFixes,
     };
   } catch (error) {
-    logs.push(`Autofix failed: ${(error as Error).message}`);
-    return {
-      checkConclusion: "failure",
-      autofixConclusion: "neutral",
-      summary: "Autofix encountered an error while processing the PR.",
-      details: logs.filter(Boolean).join("\n"),
-      appliedFixes: false,
-    };
+    const err = error instanceof Error ? error : new Error("Unknown error.");
+    logs.push(`Autofix failed: ${err.message}`);
+    throw new AutofixError(err.message, logs.filter(Boolean), err);
   } finally {
     await fs.promises.rm(tempDir, { recursive: true, force: true });
   }

@@ -10,16 +10,44 @@ export type PullRequestContext = {
   htmlUrl: string;
 };
 
+type PullRequestPayload = {
+  repository?: {
+    owner?: { login?: string };
+    name?: string;
+  };
+  pull_request?: {
+    number?: number;
+    head?: {
+      sha?: string;
+      ref?: string;
+      repo?: { full_name?: string } | null;
+    };
+    html_url?: string;
+  };
+};
+
 export const extractPullRequestContext = (
-  payload: any,
-): PullRequestContext => {
-  const owner = payload.repository.owner.login as string;
-  const repo = payload.repository.name as string;
-  const pullNumber = payload.pull_request.number as number;
-  const headSha = payload.pull_request.head.sha as string;
-  const headRef = payload.pull_request.head.ref as string;
-  const headRepoFullName = payload.pull_request.head.repo.full_name as string;
-  const htmlUrl = payload.pull_request.html_url as string;
+  payload: PullRequestPayload,
+): PullRequestContext | null => {
+  const owner = payload.repository?.owner?.login;
+  const repo = payload.repository?.name;
+  const pullNumber = payload.pull_request?.number;
+  const headSha = payload.pull_request?.head?.sha;
+  const headRef = payload.pull_request?.head?.ref;
+  const headRepoFullName = payload.pull_request?.head?.repo?.full_name;
+  const htmlUrl = payload.pull_request?.html_url;
+
+  if (
+    !owner ||
+    !repo ||
+    !pullNumber ||
+    !headSha ||
+    !headRef ||
+    !headRepoFullName ||
+    !htmlUrl
+  ) {
+    return null;
+  }
 
   return {
     owner,

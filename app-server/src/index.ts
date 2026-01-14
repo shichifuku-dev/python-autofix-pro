@@ -32,15 +32,28 @@ const supportedActions = new Set([
   "ready_for_review",
 ]);
 
-webhooks.on("pull_request", async ({ payload }) => {
-  if (!supportedActions.has(payload.action)) {
+type PullRequestPayload = Parameters<typeof extractPullRequestContext>[0] & {
+  action?: string;
+  installation?: { id?: number };
+};
+
+const handlePullRequestEvent = async (
+  payload: PullRequestPayload,
+): Promise<void> => {
+  const action = payload.action;
+  if (!action || !supportedActions.has(action)) {
     return;
   }
 
   const context = extractPullRequestContext(payload);
+  if (!context) {
+    console.warn("pull_request payload missing required fields.", { action });
+    return;
+  }
+
   const installationId = payload.installation?.id;
   if (!installationId) {
-    console.warn("Missing installation id for pull_request event.");
+    console.warn("Missing installation id for pull_request event.", { action });
     return;
   }
 
@@ -54,20 +67,41 @@ webhooks.on("pull_request", async ({ payload }) => {
 
   const checkRunIds = new Map<CheckRunName, number>();
   const checkRuns: CheckRunName[] = ["CI/check", "CI/autofix"];
-
-  for (const name of checkRuns) {
-    const checkRunId = await createCheckRun(octokit, {
-      owner: context.owner,
-      repo: context.repo,
-      name,
-      headSha: context.headSha,
-      status: "in_progress",
-      output: inProgressOutput,
-    });
-    checkRunIds.set(name, checkRunId);
-  }
+  const finalizeCheckRuns = async (
+    conclusion: "success" | "failure" | "neutral",
+    output: { title: string; summary: string; text?: string },
+    override?: Partial<Record<CheckRunName, "success" | "failure" | "neutral">>,
+  ): Promise<void> => {
+    await Promise.all(
+      checkRuns.map((name) => {
+        const checkRunId = checkRunIds.get(name);
+        if (!checkRunId) {
+          return Promise.resolve();
+        }
+        return completeCheckRun(octokit, {
+          owner: context.owner,
+          repo: context.repo,
+          checkRunId,
+          conclusion: override?.[name] ?? conclusion,
+          output,
+        });
+      }),
+    );
+  };
 
   try {
+    for (const name of checkRuns) {
+      const checkRunId = await createCheckRun(octokit, {
+        owner: context.owner,
+        repo: context.repo,
+        name,
+        headSha: context.headSha,
+        status: "in_progress",
+        output: inProgressOutput,
+      });
+      checkRunIds.set(name, checkRunId);
+    }
+
     const files = await listPullRequestFiles(
       octokit,
       context.owner,
@@ -77,21 +111,11 @@ webhooks.on("pull_request", async ({ payload }) => {
 
     if (!containsPythonChanges(files)) {
       const summary = "Skipped: no Python changes.";
-      await Promise.all(
-        checkRuns.map((name) =>
-          completeCheckRun(octokit, {
-            owner: context.owner,
-            repo: context.repo,
-            checkRunId: checkRunIds.get(name) ?? 0,
-            conclusion: "success",
-            output: {
-              title: "Python Autofix Pro",
-              summary,
-              text: summary,
-            },
-          }),
-        ),
-      );
+      await finalizeCheckRuns("success", {
+        title: "Python Autofix Pro",
+        summary,
+        text: summary,
+      });
       return;
     }
 
@@ -147,22 +171,17 @@ webhooks.on("pull_request", async ({ payload }) => {
       );
     }
   } catch (error) {
+    console.error("pull_request handler failed.", { action, error });
     const summary = "Autofix failed unexpectedly. See logs for details.";
     const details = (error as Error).message;
-    await Promise.all(
-      checkRuns.map((name) =>
-        completeCheckRun(octokit, {
-          owner: context.owner,
-          repo: context.repo,
-          checkRunId: checkRunIds.get(name) ?? 0,
-          conclusion: name === "CI/check" ? "failure" : "neutral",
-          output: {
-            title: "Python Autofix Pro",
-            summary,
-            text: details,
-          },
-        }),
-      ),
+    await finalizeCheckRuns(
+      "neutral",
+      {
+        title: "Python Autofix Pro",
+        summary,
+        text: details,
+      },
+      { "CI/check": "failure" },
     );
     const docsLine = config.docsUrl
       ? `\n\nDocs: ${config.docsUrl}`
@@ -175,6 +194,15 @@ webhooks.on("pull_request", async ({ payload }) => {
       `### Python Autofix Pro\n\n${summary}${docsLine}`,
     );
   }
+};
+
+webhooks.on("pull_request", ({ payload }) => {
+  void handlePullRequestEvent(payload).catch((error) => {
+    console.error("pull_request handler crashed.", {
+      action: payload?.action,
+      error,
+    });
+  });
 });
 
 const server = express();

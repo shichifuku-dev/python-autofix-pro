@@ -1,6 +1,7 @@
 import express from "express";
 import { App } from "@octokit/app";
 import { Webhooks, createNodeMiddleware } from "@octokit/webhooks";
+import type { CheckSuiteEvent, PullRequestEvent } from "@octokit/webhooks-types";
 import { loadConfig } from "./config.js";
 import {
   createCheckRun,
@@ -32,16 +33,16 @@ const supportedActions = new Set([
   "ready_for_review",
 ]);
 
-type PullRequestPayload = Parameters<typeof extractPullRequestContext>[0] & {
-  action?: string;
-  installation?: { id?: number };
-};
+const supportedCheckSuiteActions = new Set(["requested", "rerequested"]);
 
-const handlePullRequestEvent = async (
-  payload: PullRequestPayload,
-): Promise<void> => {
+const handlePullRequestEvent = async (payload: PullRequestEvent): Promise<void> => {
   const action = payload.action;
   if (!action || !supportedActions.has(action)) {
+    return;
+  }
+
+  if (!payload.pull_request) {
+    console.warn("pull_request payload missing pull_request field.", { action });
     return;
   }
 
@@ -196,9 +197,41 @@ const handlePullRequestEvent = async (
   }
 };
 
+const handleCheckSuiteEvent = async (payload: CheckSuiteEvent): Promise<void> => {
+  const action = payload.action;
+  if (!action || !supportedCheckSuiteActions.has(action)) {
+    return;
+  }
+
+  if (!payload.check_suite) {
+    console.warn("check_suite payload missing check_suite field.", { action });
+    return;
+  }
+
+  const pullRequests = payload.check_suite.pull_requests;
+  if (!pullRequests || pullRequests.length === 0) {
+    console.info("check_suite payload has no pull requests; skipping.", { action });
+    return;
+  }
+
+  console.info("check_suite event received; deferring to pull_request events.", {
+    action,
+    pullRequestCount: pullRequests.length,
+  });
+};
+
 webhooks.on("pull_request", ({ payload }) => {
   void handlePullRequestEvent(payload).catch((error) => {
     console.error("pull_request handler crashed.", {
+      action: payload?.action,
+      error,
+    });
+  });
+});
+
+webhooks.on("check_suite", ({ payload }) => {
+  void handleCheckSuiteEvent(payload).catch((error) => {
+    console.error("check_suite handler crashed.", {
       action: payload?.action,
       error,
     });

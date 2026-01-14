@@ -19,6 +19,8 @@ export type CreateCheckRunInput = {
   repo: string;
   name: CheckRunName;
   headSha: string;
+  installationId: number;
+  action: string;
   status: "in_progress" | "completed";
   conclusion?: "success" | "failure" | "neutral";
   output: CheckOutput;
@@ -28,6 +30,13 @@ export const createCheckRun = async (
   octokit: Octokit,
   input: CreateCheckRunInput,
 ): Promise<number> => {
+  console.info("checks.create request", {
+    owner: input.owner,
+    repo: input.repo,
+    headSha: input.headSha,
+    installationId: input.installationId,
+    action: input.action,
+  });
   const response = await octokit.rest.checks.create({
     owner: input.owner,
     repo: input.repo,
@@ -37,6 +46,14 @@ export const createCheckRun = async (
     conclusion: input.conclusion,
     output: buildCheckOutput(input.output),
   });
+  console.info("checks.create response", {
+    owner: input.owner,
+    repo: input.repo,
+    headSha: input.headSha,
+    installationId: input.installationId,
+    action: input.action,
+    checkRunId: response.data.id,
+  });
 
   return response.data.id;
 };
@@ -45,6 +62,9 @@ export type CompleteCheckRunInput = {
   owner: string;
   repo: string;
   checkRunId: number;
+  headSha: string;
+  installationId: number;
+  action: string;
   conclusion: "success" | "failure" | "neutral";
   output: CheckOutput;
 };
@@ -53,12 +73,28 @@ export const completeCheckRun = async (
   octokit: Octokit,
   input: CompleteCheckRunInput,
 ): Promise<void> => {
-  await octokit.rest.checks.update({
+  console.info("checks.update request", {
+    owner: input.owner,
+    repo: input.repo,
+    headSha: input.headSha,
+    installationId: input.installationId,
+    action: input.action,
+    checkRunId: input.checkRunId,
+  });
+  const response = await octokit.rest.checks.update({
     owner: input.owner,
     repo: input.repo,
     check_run_id: input.checkRunId,
     status: "completed",
     conclusion: input.conclusion,
     output: buildCheckOutput(input.output),
+  });
+  console.info("checks.update response", {
+    owner: input.owner,
+    repo: input.repo,
+    headSha: input.headSha,
+    installationId: input.installationId,
+    action: input.action,
+    checkRunId: response.data.id,
   });
 };

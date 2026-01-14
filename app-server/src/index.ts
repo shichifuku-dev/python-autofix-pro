@@ -200,6 +200,7 @@ const handlePullRequestEvent = async (payload: PullRequestEvent): Promise<void> 
 const handleCheckSuiteEvent = async (payload: CheckSuiteEvent): Promise<void> => {
   const action = payload.action;
   if (!action || !supportedCheckSuiteActions.has(action)) {
+    console.warn("check_suite action not supported; skipping.", { action });
     return;
   }
 
@@ -209,14 +210,14 @@ const handleCheckSuiteEvent = async (payload: CheckSuiteEvent): Promise<void> =>
   }
 
   const pullRequests = payload.check_suite.pull_requests;
-  if (!pullRequests || pullRequests.length === 0) {
-    console.info("check_suite payload has no pull requests; skipping.", { action });
+  if (action === "requested" && (!Array.isArray(pullRequests) || pullRequests.length === 0)) {
+    console.warn("check_suite requested without pull requests; skipping.", { action });
     return;
   }
 
   console.info("check_suite event received; deferring to pull_request events.", {
     action,
-    pullRequestCount: pullRequests.length,
+    pullRequestCount: Array.isArray(pullRequests) ? pullRequests.length : 0,
   });
 };
 

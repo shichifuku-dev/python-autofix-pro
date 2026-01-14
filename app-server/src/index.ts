@@ -37,6 +37,21 @@ const supportedActions = new Set([
 
 const supportedCheckSuiteActions = new Set(["requested", "rerequested"]);
 const lastCommentedShaByPull = new Map<string, string>();
+const redactedKeys = new Set([
+  "authorization",
+  "password",
+  "token",
+  "access_token",
+  "client_secret",
+]);
+const responseHeaderAllowlist = new Set([
+  "date",
+  "retry-after",
+  "x-github-request-id",
+  "x-ratelimit-limit",
+  "x-ratelimit-remaining",
+  "x-ratelimit-reset",
+]);
 
 const getPullKey = (owner: string, repo: string, pullNumber: number): string => {
   return `${owner}/${repo}#${pullNumber}`;
@@ -61,6 +76,149 @@ const logCheckCreateError = (error: unknown, context: {
     message: err?.message,
     response: err?.response?.data,
   });
+};
+
+const sanitizeText = (value: string): string => {
+  return value
+    .replace(/x-access-token:[^@]+@/gi, "x-access-token:[redacted]@")
+    .replace(/access_token=([^&\s]+)/gi, "access_token=[redacted]")
+    .replace(/token=([^&\s]+)/gi, "token=[redacted]");
+};
+
+const getErrorMessage = (error: unknown): string => {
+  if (error instanceof Error) {
+    return sanitizeText(error.message);
+  }
+  if (typeof error === "string") {
+    return sanitizeText(error);
+  }
+  return "Unknown error.";
+};
+
+const truncate = (value: string, maxLength = 2000): string => {
+  if (value.length <= maxLength) {
+    return value;
+  }
+  return `${value.slice(0, maxLength)}...<truncated>`;
+};
+
+const safeSerialize = (value: unknown): string => {
+  if (typeof value === "string") {
+    return truncate(sanitizeText(value));
+  }
+  try {
+    return truncate(
+      JSON.stringify(value, (key, val) => {
+        if (redactedKeys.has(key.toLowerCase())) {
+          return "[redacted]";
+        }
+        return val;
+      }),
+    );
+  } catch {
+    return truncate(sanitizeText(String(value)));
+  }
+};
+
+const pickResponseHeaders = (
+  headers?: Record<string, string | number | undefined>,
+): Record<string, string | number> | undefined => {
+  if (!headers) {
+    return undefined;
+  }
+  const normalized: Record<string, string | number | undefined> = {};
+  for (const [key, value] of Object.entries(headers)) {
+    normalized[key.toLowerCase()] = value;
+  }
+  const selected: Record<string, string | number> = {};
+  for (const headerName of responseHeaderAllowlist) {
+    const value = normalized[headerName];
+    if (value !== undefined) {
+      selected[headerName] = value;
+    }
+  }
+  return Object.keys(selected).length > 0 ? selected : undefined;
+};
+
+const logAutofixError = (
+  error: unknown,
+  context: {
+    headRepoFullName?: string;
+    headRef?: string;
+    headSha?: string;
+    installationId?: number;
+  },
+): void => {
+  const err = error as {
+    name?: string;
+    message?: string;
+    stack?: string;
+    status?: number;
+    request?: { method?: string; url?: string };
+    response?: { headers?: Record<string, string>; data?: unknown };
+  };
+  console.error("autofix.error", {
+    step: "autofix.error",
+    ...context,
+    error: {
+      name: err?.name ?? "Error",
+      message: sanitizeText(err?.message ?? getErrorMessage(error)),
+      stack: err?.stack ? sanitizeText(err.stack) : undefined,
+    },
+    request: err?.request
+      ? {
+          method: err.request.method,
+          url: err.request.url,
+        }
+      : undefined,
+    status: err?.status,
+    response: err?.response
+      ? {
+          headers: pickResponseHeaders(err.response.headers),
+          data: safeSerialize(err.response.data),
+        }
+      : undefined,
+  });
+};
+
+const getFailureSummaryReason = (status: number | undefined, message: string): string => {
+  if (status === 403) {
+    return "missing GitHub App permissions";
+  }
+  if (status === 404) {
+    return "app not installed or wrong repo/ref";
+  }
+  if (status === 422) {
+    return "invalid ref/sha or check run update issues";
+  }
+  return truncate(message, 120);
+};
+
+const getFailureHint = (status: number | undefined): string => {
+  if (status === 403) {
+    return "Ensure the GitHub App has the required permissions (Contents, Pull requests, Issues, Checks) and reinstall or refresh the installation.";
+  }
+  if (status === 404) {
+    return "Verify the GitHub App is installed on the repo and the repo name/ref are correct.";
+  }
+  if (status === 422) {
+    return "Confirm the ref/SHA exists and check runs can be updated for this commit.";
+  }
+  return "Check the error details and resolve the underlying issue before rerunning.";
+};
+
+const buildFailureOutput = (error: unknown): { summary: string; text: string } => {
+  const err = error as { status?: number; message?: string };
+  const status = typeof err?.status === "number" ? err.status : undefined;
+  const message = getErrorMessage(error);
+  const summary = `Autofix failed: ${getFailureSummaryReason(status, message)}`;
+  const hint = getFailureHint(status);
+  const textLines = [`How to fix: ${hint}`];
+  if (!status || ![403, 404, 422].includes(status)) {
+    textLines.push(`Error: ${message}`);
+  }
+  textLines.push("Docs: docs/TROUBLESHOOTING.md");
+  return { summary, text: textLines.join("\n") };
 };
 
 const safePostPullRequestComment = async (
@@ -96,12 +254,17 @@ const safePostPullRequestComment = async (
 const createInstallationOctokit = async (
   installationId: number,
 ): Promise<{ octokit: Octokit; token: string }> => {
-  const tokenResponse = await app.octokit.request(
-    "POST /app/installations/{installation_id}/access_tokens",
-    { installation_id: installationId },
-  );
-  const token = tokenResponse.data.token;
-  return { octokit: new Octokit({ auth: token }), token };
+  try {
+    const tokenResponse = await app.octokit.request(
+      "POST /app/installations/{installation_id}/access_tokens",
+      { installation_id: installationId },
+    );
+    const token = tokenResponse.data.token;
+    return { octokit: new Octokit({ auth: token }), token };
+  } catch (error) {
+    const message = getErrorMessage(error);
+    throw new Error(`Installation token creation failed: ${message}`);
+  }
 };
 
 const logUsage = (params: {
@@ -246,12 +409,27 @@ const handlePullRequestEvent = async (payload: PullRequestEvent): Promise<void> 
       throw new Error("Missing installation access token.");
     }
 
+    console.info("autofix.start", {
+      step: "autofix.start",
+      headRepoFullName: context.headRepoFullName,
+      headRef: context.headRef,
+      headSha: context.headSha,
+      installationId,
+    });
+
     const autofixResult = await runAutofix({
       token: installationToken,
       headRepoFullName: context.headRepoFullName,
       headRef: context.headRef,
       headSha: context.headSha,
       commitMessage: "chore(autofix): python formatting",
+    });
+
+    console.info("autofix.done", {
+      step: "autofix.done",
+      appliedFixes: autofixResult.appliedFixes,
+      checkConclusion: autofixResult.checkConclusion,
+      autofixConclusion: autofixResult.autofixConclusion,
     });
 
     const checkRunId = checkRunIds.get("CI/check");
@@ -322,18 +500,19 @@ const handlePullRequestEvent = async (payload: PullRequestEvent): Promise<void> 
     }
     result = autofixResult.checkConclusion === "failure" ? "completed_failure" : "completed_success";
   } catch (error) {
-    console.error("pull_request handler failed.", { action, error });
-    const summary = "Autofix failed unexpectedly. See logs for details.";
-    const details = (error as Error).message;
-    await finalizeCheckRuns(
-      "neutral",
-      {
-        title: "Python Autofix Pro",
-        summary,
-        text: details,
-      },
-      { "CI/check": "failure" },
-    );
+    logAutofixError(error, {
+      headRepoFullName: context?.headRepoFullName,
+      headRef: context?.headRef,
+      headSha: context?.headSha,
+      installationId,
+    });
+    console.error("pull_request handler failed.", { action, error: getErrorMessage(error) });
+    const failureOutput = buildFailureOutput(error);
+    await finalizeCheckRuns("failure", {
+      title: "Python Autofix Pro",
+      summary: failureOutput.summary,
+      text: failureOutput.text,
+    });
     const docsLine = config.docsUrl
       ? `\n\nDocs: ${config.docsUrl}`
       : "";
@@ -343,7 +522,7 @@ const handlePullRequestEvent = async (payload: PullRequestEvent): Promise<void> 
         context.owner,
         context.repo,
         context.pullNumber,
-        `### Python Autofix Pro\n\n${summary}${docsLine}`,
+        `### Python Autofix Pro\n\n${failureOutput.summary}${docsLine}`,
         { action, installationId, headSha: context.headSha },
       );
     }
@@ -363,6 +542,9 @@ const handlePullRequestEvent = async (payload: PullRequestEvent): Promise<void> 
 
 const handleCheckSuiteEvent = async (payload: CheckSuiteEvent): Promise<void> => {
   const action = payload.action;
+  if (action === "completed") {
+    return;
+  }
   if (!action || !supportedCheckSuiteActions.has(action)) {
     console.warn("check_suite action not supported; skipping.", { action });
     return;

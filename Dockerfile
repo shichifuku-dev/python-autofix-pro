@@ -17,20 +17,21 @@ RUN npm ci --omit=dev && npm cache clean --force
 
 FROM node:${NODE_VERSION}-bookworm-slim AS runtime
 ARG RUFF_VERSION
-ENV NODE_ENV=production
+ENV NODE_ENV=production \
+    PYTHONUNBUFFERED=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
 
 WORKDIR /app/app-server
 
-# 1) 必須ツール: git + curl + ca-certificates
-# 2) ruff は pip ではなく公式バイナリを取得して配置（PEP668回避）
+# 必須: git（spawn git ENOENT 対策）
+# 必須: python3 + pip（ruff 実行用）
+# PEP668 対策: --break-system-packages を付けて ruff を pip で入れる
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends git curl ca-certificates \
-  && rm -rf /var/lib/apt/lists/* \
-  && curl -LsSf https://github.com/astral-sh/ruff/releases/download/v${RUFF_VERSION}/ruff-x86_64-unknown-linux-gnu.tar.gz \
-    | tar -xz -C /tmp \
-  && mv /tmp/ruff-*/ruff /usr/local/bin/ruff \
-  && chmod +x /usr/local/bin/ruff \
-  && ruff --version
+  && apt-get install -y --no-install-recommends python3 python3-pip git ca-certificates \
+  && python3 -m pip install --no-cache-dir --break-system-packages "ruff==${RUFF_VERSION}" \
+  && ruff --version \
+  && apt-get clean \
+  && rm -rf /var/lib/apt/lists/*
 
 COPY --from=prod-deps /app/app-server/node_modules ./node_modules
 COPY --from=build /app/app-server/dist ./dist

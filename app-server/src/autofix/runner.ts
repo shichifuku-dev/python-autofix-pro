@@ -9,6 +9,7 @@ export type AutofixInput = {
   headRef: string;
   headSha: string;
   commitMessage: string;
+  enableUnsafeFixes: boolean;
 };
 
 export type AutofixResult = {
@@ -17,6 +18,8 @@ export type AutofixResult = {
   summary: string;
   details: string;
   appliedFixes: boolean;
+  unsafeFixesUsed: boolean;
+  hiddenFixesAvailable: boolean;
 };
 
 export class AutofixError extends Error {
@@ -87,7 +90,17 @@ const ensureBlack = async (cwd: string, logs: string[]): Promise<void> => {
   await runRequiredCommand("python", ["-m", "pip", "install", "black"], { cwd });
 };
 
-const runRuffFormatting = async (cwd: string, logs: string[]) => {
+const hiddenFixesPattern = /hidden fixes can be enabled with the --unsafe-fixes option/i;
+
+const hasHiddenFixes = (...outputs: string[]): boolean => {
+  return outputs.some((output) => hiddenFixesPattern.test(output));
+};
+
+const runRuffFormatting = async (
+  cwd: string,
+  logs: string[],
+  options: { enableUnsafeFixes: boolean },
+): Promise<{ hiddenFixesAvailable: boolean; unsafeFixesUsed: boolean }> => {
   const formatResult = await runCommand("ruff", ["format", "."], {
     cwd,
   });
@@ -97,18 +110,27 @@ const runRuffFormatting = async (cwd: string, logs: string[]) => {
     throw new Error("ruff format failed.");
   }
 
-  const checkFixResult = await runCommand(
-    "ruff",
-    ["check", ".", "--fix"],
-    { cwd },
-  );
+  const checkFixArgs = ["check", ".", "--fix"];
+  const unsafeFixesUsed = options.enableUnsafeFixes;
+  if (unsafeFixesUsed) {
+    checkFixArgs.push("--unsafe-fixes");
+  }
+  const checkFixResult = await runCommand("ruff", checkFixArgs, { cwd });
   logs.push(checkFixResult.stdout.trim());
   if (checkFixResult.code !== 0) {
     logs.push(checkFixResult.stderr.trim());
   }
+
+  return {
+    hiddenFixesAvailable: hasHiddenFixes(checkFixResult.stdout, checkFixResult.stderr),
+    unsafeFixesUsed,
+  };
 };
 
-const runRuffVerification = async (cwd: string, logs: string[]) => {
+const runRuffVerification = async (
+  cwd: string,
+  logs: string[],
+): Promise<{ passed: boolean; hiddenFixesAvailable: boolean }> => {
   const formatCheck = await runCommand("ruff", ["format", "--check", "."], {
     cwd,
   });
@@ -122,10 +144,16 @@ const runRuffVerification = async (cwd: string, logs: string[]) => {
   if (formatCheck.code !== 0 || lintCheck.code !== 0) {
     logs.push(formatCheck.stderr.trim());
     logs.push(lintCheck.stderr.trim());
-    return false;
+    return {
+      passed: false,
+      hiddenFixesAvailable: hasHiddenFixes(lintCheck.stdout, lintCheck.stderr),
+    };
   }
 
-  return true;
+  return {
+    passed: true,
+    hiddenFixesAvailable: hasHiddenFixes(lintCheck.stdout, lintCheck.stderr),
+  };
 };
 
 export const runAutofix = async (input: AutofixInput): Promise<AutofixResult> => {
@@ -161,7 +189,13 @@ export const runAutofix = async (input: AutofixInput): Promise<AutofixResult> =>
     logs.push(`Checked out ${input.headRef} at ${input.headSha}.`);
 
     await ensureRuff(tempDir, logs);
-    await runRuffFormatting(tempDir, logs);
+    const ruffFormatResult = await runRuffFormatting(tempDir, logs, {
+      enableUnsafeFixes: input.enableUnsafeFixes,
+    });
+    const unsafeFixesUsed = ruffFormatResult.unsafeFixesUsed;
+    if (unsafeFixesUsed) {
+      logs.push("Unsafe fixes enabled (Pro).");
+    }
 
     if (isBlackConfigured(tempDir)) {
       logs.push("black configuration detected; running black.");
@@ -193,18 +227,29 @@ export const runAutofix = async (input: AutofixInput): Promise<AutofixResult> =>
       logs.push("Applied fixes and pushed to the PR head branch.");
     }
 
-    const verificationPass = await runRuffVerification(tempDir, logs);
+    const verificationResult = await runRuffVerification(tempDir, logs);
+    const hiddenFixesAvailable =
+      ruffFormatResult.hiddenFixesAvailable || verificationResult.hiddenFixesAvailable;
+    const summarySuffixes: string[] = [];
+    if (unsafeFixesUsed) {
+      summarySuffixes.push("Unsafe fixes enabled (Pro).");
+    } else if (hiddenFixesAvailable) {
+      summarySuffixes.push("Hidden fixes available; enable unsafe fixes (Pro).");
+    }
+    const summarySuffix = summarySuffixes.length > 0 ? ` ${summarySuffixes.join(" ")}` : "";
 
     return {
-      checkConclusion: verificationPass ? "success" : "failure",
+      checkConclusion: verificationResult.passed ? "success" : "failure",
       autofixConclusion: "success",
-      summary: verificationPass
+      summary: verificationResult.passed
         ? appliedFixes
-          ? "Applied Python formatting fixes."
-          : "No formatting changes needed."
-        : "Formatting completed, but lint checks still report issues.",
+          ? `Applied Python formatting fixes.${summarySuffix}`
+          : `No formatting changes needed.${summarySuffix}`
+        : `Formatting completed, but lint checks still report issues.${summarySuffix}`,
       details: logs.filter(Boolean).join("\n"),
       appliedFixes,
+      unsafeFixesUsed,
+      hiddenFixesAvailable,
     };
   } catch (error) {
     const err = error instanceof Error ? error : new Error("Unknown error.");

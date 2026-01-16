@@ -57,6 +57,13 @@ When there are no Python changes, both are marked as `success` with the output: 
 | `DOCS_URL` | Optional URL to include in PR comments |
 | `PRO_INSTALLATION_IDS` | Comma-separated installation IDs granted the Pro plan |
 
+### Repository variables
+
+Pro installations can opt in to unsafe fixes by setting a repository Actions variable named
+`PY_AUTOFIX_ENABLE_UNSAFE_FIXES` to `true`. The default is `false`, and Free installations always
+run without unsafe fixes even if the variable is set. This controls whether `ruff check --fix`
+adds `--unsafe-fixes` for the PR branch. 
+
 ### GitHub App permissions
 
 Recommended permissions for the GitHub App:

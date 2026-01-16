@@ -14,6 +14,7 @@ import {
   listPullRequestFiles,
   containsPythonChanges,
 } from "./github/pullRequests.js";
+import { getRepoVariable } from "./github/variables.js";
 import { runAutofix } from "./autofix/runner.js";
 import { runCommand } from "./utils/exec.js";
 import { postPullRequestComment } from "./github/comments.js";
@@ -53,6 +54,7 @@ const responseHeaderAllowlist = new Set([
   "x-ratelimit-remaining",
   "x-ratelimit-reset",
 ]);
+const unsafeFixesVariableName = "PY_AUTOFIX_ENABLE_UNSAFE_FIXES";
 
 const getPullKey = (owner: string, repo: string, pullNumber: number): string => {
   return `${owner}/${repo}#${pullNumber}`;
@@ -151,6 +153,53 @@ const pickResponseHeaders = (
     }
   }
   return Object.keys(selected).length > 0 ? selected : undefined;
+};
+
+const parseBooleanVariable = (value: string | null): boolean | null => {
+  if (value === null) {
+    return null;
+  }
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "true") {
+    return true;
+  }
+  if (normalized === "false") {
+    return false;
+  }
+  return null;
+};
+
+const resolveUnsafeFixesSetting = async (
+  octokit: Octokit,
+  owner: string,
+  repo: string,
+): Promise<{ requested: boolean; rawValue: string | null }> => {
+  try {
+    const rawValue = await getRepoVariable(
+      octokit,
+      owner,
+      repo,
+      unsafeFixesVariableName,
+    );
+    const parsed = parseBooleanVariable(rawValue);
+    if (parsed === null && rawValue !== null) {
+      console.warn("Invalid unsafe fixes variable value; defaulting to false.", {
+        owner,
+        repo,
+        name: unsafeFixesVariableName,
+        rawValue,
+      });
+    }
+    return { requested: parsed ?? false, rawValue };
+  } catch (error) {
+    console.warn("Failed to read unsafe fixes repo variable; defaulting to false.", {
+      owner,
+      repo,
+      name: unsafeFixesVariableName,
+      error: getErrorMessage(error),
+    });
+    return { requested: false, rawValue: null };
+  }
 };
 
 const logAutofixError = (
@@ -422,12 +471,23 @@ const handlePullRequestEvent = async (payload: PullRequestEvent): Promise<void> 
       throw new Error("Missing installation access token.");
     }
 
+    const unsafeFixesSetting = await resolveUnsafeFixesSetting(
+      authedOctokit,
+      context.owner,
+      context.repo,
+    );
+    const enableUnsafeFixes =
+      plan === "pro" ? unsafeFixesSetting.requested : false;
+
     console.info("autofix.start", {
       step: "autofix.start",
       headRepoFullName: context.headRepoFullName,
       headRef: context.headRef,
       headSha: context.headSha,
       installationId,
+      plan,
+      enableUnsafeFixes,
+      unsafeFixesRequested: unsafeFixesSetting.requested,
     });
 
     const autofixResult = await runAutofix({
@@ -436,6 +496,7 @@ const handlePullRequestEvent = async (payload: PullRequestEvent): Promise<void> 
       headRef: context.headRef,
       headSha: context.headSha,
       commitMessage: "chore(autofix): python formatting",
+      enableUnsafeFixes,
     });
 
     console.info("autofix.done", {
@@ -443,6 +504,9 @@ const handlePullRequestEvent = async (payload: PullRequestEvent): Promise<void> 
       appliedFixes: autofixResult.appliedFixes,
       checkConclusion: autofixResult.checkConclusion,
       autofixConclusion: autofixResult.autofixConclusion,
+      plan,
+      enableUnsafeFixes,
+      unsafeFixesPassed: autofixResult.unsafeFixesUsed,
     });
 
     const checkRunId = checkRunIds.get("CI/check");

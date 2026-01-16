@@ -234,7 +234,7 @@ export const runAutofix = async (input: AutofixInput): Promise<AutofixResult> =>
     if (unsafeFixesUsed) {
       summarySuffixes.push("Unsafe fixes enabled (Pro).");
     } else if (hiddenFixesAvailable) {
-      summarySuffixes.push("Hidden fixes available; enable unsafe fixes (Pro).");
+      summarySuffixes.push("Pro can enable Unsafe Fixes to attempt to auto-fix these.");
     }
     const summarySuffix = summarySuffixes.length > 0 ? ` ${summarySuffixes.join(" ")}` : "";
 

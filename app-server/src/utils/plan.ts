@@ -17,5 +17,10 @@ const parseProInstallationIds = (): Set<number> => {
 const PRO_INSTALLATION_IDS = parseProInstallationIds();
 
 export const getPlanForInstallation = (installationId: number): InstallationPlan => {
+  // TEMP FOR TESTING - REMOVE BEFORE LAUNCH
+  if (process.env.PLAN_OVERRIDE === "pro") {
+    return "pro";
+  }
+
   return PRO_INSTALLATION_IDS.has(installationId) ? "pro" : "free";
 };

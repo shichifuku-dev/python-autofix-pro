@@ -10,6 +10,7 @@ export type AutofixInput = {
   headSha: string;
   commitMessage: string;
   enableUnsafeFixes: boolean;
+  unsafeFixesSkipReason?: string;
 };
 
 export type AutofixResult = {
@@ -233,6 +234,8 @@ export const runAutofix = async (input: AutofixInput): Promise<AutofixResult> =>
     const summarySuffixes: string[] = [];
     if (unsafeFixesUsed) {
       summarySuffixes.push("Unsafe fixes enabled (Pro).");
+    } else if (input.unsafeFixesSkipReason) {
+      summarySuffixes.push(input.unsafeFixesSkipReason);
     } else if (hiddenFixesAvailable) {
       summarySuffixes.push("Pro can enable Unsafe Fixes to attempt to auto-fix these.");
     }

@@ -14,7 +14,7 @@ import {
   listPullRequestFiles,
   containsPythonChanges,
 } from "./github/pullRequests.js";
-import { getRepoVariable } from "./github/variables.js";
+import { getRepoSettingsFromIssue } from "./github/settingsIssue.js";
 import { runAutofix } from "./autofix/runner.js";
 import { runCommand } from "./utils/exec.js";
 import { postPullRequestComment } from "./github/comments.js";
@@ -54,8 +54,6 @@ const responseHeaderAllowlist = new Set([
   "x-ratelimit-remaining",
   "x-ratelimit-reset",
 ]);
-const unsafeFixesVariableName = "PY_AUTOFIX_ENABLE_UNSAFE_FIXES";
-
 const getPullKey = (owner: string, repo: string, pullNumber: number): string => {
   return `${owner}/${repo}#${pullNumber}`;
 };
@@ -155,51 +153,13 @@ const pickResponseHeaders = (
   return Object.keys(selected).length > 0 ? selected : undefined;
 };
 
-const parseBooleanVariable = (value: string | null): boolean | null => {
-  if (value === null) {
-    return null;
-  }
-  const normalized = value.trim().toLowerCase();
-  if (normalized === "true") {
-    return true;
-  }
-  if (normalized === "false") {
-    return false;
-  }
-  return null;
-};
-
 const resolveUnsafeFixesSetting = async (
   octokit: Octokit,
   owner: string,
   repo: string,
-): Promise<{ requested: boolean; rawValue: string | null }> => {
-  try {
-    const rawValue = await getRepoVariable(
-      octokit,
-      owner,
-      repo,
-      unsafeFixesVariableName,
-    );
-    const parsed = parseBooleanVariable(rawValue);
-    if (parsed === null && rawValue !== null) {
-      console.warn("Invalid unsafe fixes variable value; defaulting to false.", {
-        owner,
-        repo,
-        name: unsafeFixesVariableName,
-        rawValue,
-      });
-    }
-    return { requested: parsed ?? false, rawValue };
-  } catch (error) {
-    console.warn("Failed to read unsafe fixes repo variable; defaulting to false.", {
-      owner,
-      repo,
-      name: unsafeFixesVariableName,
-      error: getErrorMessage(error),
-    });
-    return { requested: false, rawValue: null };
-  }
+): Promise<{ requested: boolean }> => {
+  const settings = await getRepoSettingsFromIssue(octokit, owner, repo);
+  return { requested: settings.enableUnsafeFixes };
 };
 
 const logAutofixError = (

@@ -1,123 +1,119 @@
-# Python Autofix Pro (GitHub App)
+# Python Autofix Pro — GitHub App for safe, automatic Ruff fixes
 
-Python Autofix Pro is a production-ready GitHub App that runs on pull request events and automatically fixes Python formatting/lint issues using **ruff** (and optional **black**). It always reports two required check runs, even when skipping, so repositories never get stuck waiting for pending statuses.
+Python Autofix Pro is a GitHub App that applies **Ruff** formatting and lint autofixes on pull requests and reports results as GitHub Checks.
+
+> ⚠️ **Review required:** The app may push a commit to the PR branch. Always review “Files changed” before merging.
 
 ## What it does
 
-- Listens to pull request events (`opened`, `synchronize`, `reopened`, `ready_for_review`).
-- Detects whether Python files are present in the PR diff.
-- Always reports the required check runs:
-  - `CI/check`
-  - `CI/autofix`
-- When Python files are present:
-  - Runs `ruff format`, then `ruff check --fix`.
-  - Optionally runs `black` when a black configuration is detected.
-  - Commits fixes to the PR **head** branch only (never the default branch, never force-pushes).
-  - Reports check results and posts a PR comment only when fixes were committed or failures occurred.
+- Runs on pull request events and creates two GitHub Check Runs: **`CI/check`** and **`CI/autofix`**.
+- Uses **Ruff** for formatting and lint autofixes.
+- When fixes are applied, it **pushes a commit to the PR branch** only.
+- Reports clear summaries even when no changes are made.
 
-## What it does *not* do
+## How it works (high-level flow)
 
-- It does not guarantee mergeability, correctness, or availability.
-- It does not block merges when tools fail; it still reports `CI/check` as a failure with a concise summary and `CI/autofix` as neutral.
-- It does not touch the default branch.
-- It does not run arbitrary code beyond formatting/linting the PR head branch.
+1. A pull request is opened or updated.
+2. The app inspects the PR diff to see if Python files changed.
+3. It runs Ruff and creates two checks: **`CI/check`** and **`CI/autofix`**.
+4. If Ruff applies fixes, the app commits them to the PR branch.
+5. If **unsafe fixes** are enabled and eligible, Ruff may run with `--unsafe-fixes` (Pro only, opt-in).
 
-## Safety guarantees
+## Installation
 
-- **Never force-pushes**.
-- **Never commits to the default branch**.
-- **Only commits to PR head branches** when fixes are applied.
-- Always completes check runs so CI does not stall.
-
-## Required check runs
-
-This app always reports two required checks:
-
-- `CI/check`
-- `CI/autofix`
-
-When there are no Python changes, both are marked as `success` with the output: `Skipped: no Python changes.`
-
-## Limitations
-
-- Results depend on the availability of `ruff`/`black` in the runtime environment.
-- Linting failures or syntax errors are reported but do not block merges automatically.
-- Fork permissions may limit the ability to push changes to PR branches.
+Install the GitHub App from the Marketplace and select the repositories you want it to run on. The app only runs on repositories where it is installed.
 
 ## Configuration
 
-### Environment variables
+### Settings issue (required for unsafe fixes)
 
-| Variable | Description |
-| --- | --- |
-| `APP_ID` | GitHub App ID |
-| `PRIVATE_KEY` | GitHub App private key (PEM) |
-| `WEBHOOK_SECRET` | Webhook secret configured in GitHub App |
-| `PORT` | Server port (default: 3000) |
-| `DOCS_URL` | Optional URL to include in PR comments |
-| `PRO_INSTALLATION_IDS` | Comma-separated installation IDs granted the Pro plan |
+Repository settings are stored **in a GitHub Issue within the repository**. This makes settings explicit, auditable, and visible to maintainers.
 
-### Repository variables
+Create or update the settings issue with JSON like this:
 
-Pro installations can opt in to unsafe fixes by setting a repository Actions variable named
-`PY_AUTOFIX_ENABLE_UNSAFE_FIXES` to `true`. The default is `false`, and Free installations always
-run without unsafe fixes even if the variable is set. This controls whether `ruff check --fix`
-adds `--unsafe-fixes` for the PR branch. 
-
-### GitHub App permissions
-
-Recommended permissions for the GitHub App:
-
-- **Checks**: Read & Write
-- **Contents**: Read & Write (for PR head branch commits)
-- **Pull requests**: Read
-- **Issues**: Write (for PR comments)
-- **Metadata**: Read
-
-## Deployment notes
-
-The server is a minimal Express app with:
-
-- `GET /health` for readiness checks.
-- `POST /webhooks` for GitHub webhook payloads.
-
-Example (Render/Fly/Cloud Run):
-
-- Set the environment variables above.
-- Run `npm --prefix app-server install`.
-- Build via `npm --prefix app-server run build`.
-- Start via `npm --prefix app-server start`.
-
-## Troubleshooting: why checks might not appear
-
-If `CI/check` or `CI/autofix` are missing in the PR UI, verify that the app is using an
-Octokit REST client that supports `octokit.rest.checks.*` and `octokit.rest.issues.*`.
-GitHub App helpers can return a core client without REST endpoints, which leads to
-`octokit.rest` being undefined. The fix is to create an installation access token and
-instantiate `@octokit/rest` with it before creating or updating check runs.
-
-## Local development
-
-```bash
-npm --prefix app-server install
-npm --prefix app-server run dev
+```json
+{"enableUnsafeFixes": true}
 ```
 
-## Testing
+### Admin-only verification (why it exists)
 
-```bash
-npm --prefix app-server test
-npm --prefix app-server run build
-```
+Enabling unsafe fixes requires **verification that the user making the change is a repository admin**. This is a deliberate safety control to prevent accidental or unauthorized enabling of risky changes.
 
-## Examples
+## Plans: Free vs Pro
 
-Sample files for local testing are provided in the `examples/` directory.
+**Free**
+- Ruff formatting and **safe** autofixes only.
+- No unsafe fixes.
 
-## Support
+**Pro**
+- Everything in Free.
+- Optional **unsafe fixes** (Ruff `--unsafe-fixes`), **opt-in** only.
 
-For support, open an issue or contact the maintainers through GitHub Marketplace support channels.
+### Unsafe fixes eligibility (all conditions must be met)
 
-## Disclaimer
+Unsafe fixes run **only when all of the following are true**:
 
-**This tool does not guarantee mergeability, correctness, or availability. It provides best-effort CI reporting only. Not responsible for production outages, lost revenue, or damages.**
+1. The installation plan is **Pro**.
+2. The repository setting `enableUnsafeFixes` is **true**.
+3. The user who enabled it is **verified as a repo admin**.
+
+If unsafe fixes are not enabled and Ruff detects hidden fixes, the check summary will include:
+
+> "Pro can enable Unsafe Fixes to attempt to auto-fix these."
+
+## Safety & Transparency
+
+- Always review “Files changed” before merging.
+- **Unsafe fixes never run unless explicitly enabled by a repo admin.**
+- The app **only pushes commits to the PR branch** (never the default branch).
+- Checks are always reported, even when no Python files are changed.
+
+## Permissions required (high level)
+
+The app needs permissions to:
+
+- Read pull requests and repository metadata.
+- Create and update GitHub Check Runs.
+- Push commits to PR branches when fixes are applied.
+- Read and update the settings issue in the repository.
+
+> Permissions are intentionally scoped to GitHub App capabilities and do not include user tokens.
+
+## Troubleshooting
+
+**“Skipped: no Python changes.”**
+- The PR did not include Python file changes. The checks still complete successfully.
+
+**“ruff format failed.”**
+- Typically caused by **invalid Python syntax** in modified files. Fix syntax errors and re-run.
+
+**“No fixes available (hidden fixes…)”**
+- Ruff may have fixes that are considered unsafe. If you want the app to attempt these, enable unsafe fixes (Pro + admin opt-in).
+
+**“Resource not accessible by integration”**
+- The GitHub App token lacks permissions for the resource. Confirm the app is installed on the repo and has required access.
+
+## FAQ
+
+**Does it run on forks?**
+- The app can only act within repositories where it is installed. For forks, permissions may prevent pushing commits.
+
+**Can it change non-Python files?**
+- No. It only formats and fixes Python files via Ruff.
+
+**Can Free users enable Pro features via settings?**
+- No. Plan gating is enforced at the installation level; settings alone do not unlock Pro behavior.
+
+## Security / Responsible use
+
+- This app **does not guarantee correctness**. It enforces formatting and linting only.
+- Always review changes before merging.
+- Keep unsafe fixes disabled unless you explicitly want them and understand the risk.
+
+## Development / Testing
+
+There is a temporary `PLAN_OVERRIDE=pro` environment variable used **for testing only**. It must be **removed before launch**.
+
+## License / Contact
+
+See `LICENSE` for licensing details. For support, open a GitHub issue or contact the maintainers through GitHub Marketplace support.

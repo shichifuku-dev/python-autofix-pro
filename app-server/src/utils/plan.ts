@@ -18,6 +18,8 @@ const PRO_INSTALLATION_IDS = parseProInstallationIds();
 
 export const getPlanForInstallation = (installationId: number): InstallationPlan => {
   // TEMP FOR TESTING - REMOVE BEFORE LAUNCH
+  // Env-only override. This must NOT be user-controlled.
+  // Use only for local/staging smoke tests.
   if (process.env.PLAN_OVERRIDE === "pro") {
     return "pro";
   }

@@ -153,13 +153,63 @@ const pickResponseHeaders = (
   return Object.keys(selected).length > 0 ? selected : undefined;
 };
 
+const unsafeFixesAdminSkipMessage =
+  "Unsafe fixes requested but not enabled by a repo admin; skipping.";
+
+const verifyRepoAdmin = async (
+  octokit: Octokit,
+  owner: string,
+  repo: string,
+  username: string,
+): Promise<boolean> => {
+  try {
+    const response = await octokit.rest.repos.getCollaboratorPermissionLevel({
+      owner,
+      repo,
+      username,
+    });
+    return response.data.permission === "admin";
+  } catch (error) {
+    console.warn("Failed to verify repository admin for unsafe fixes.", {
+      owner,
+      repo,
+      username,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return false;
+  }
+};
+
 const resolveUnsafeFixesSetting = async (
   octokit: Octokit,
   owner: string,
   repo: string,
-): Promise<{ requested: boolean }> => {
+): Promise<{ requested: boolean; adminVerified: boolean; skipReason?: string }> => {
   const settings = await getRepoSettingsFromIssue(octokit, owner, repo);
-  return { requested: settings.enableUnsafeFixes };
+  if (!settings.enableUnsafeFixes) {
+    return { requested: false, adminVerified: false };
+  }
+  const enabledBy = settings.unsafeFixesEnabledBy;
+  if (!enabledBy?.login) {
+    return {
+      requested: true,
+      adminVerified: false,
+      skipReason: unsafeFixesAdminSkipMessage,
+    };
+  }
+  const adminVerified = await verifyRepoAdmin(
+    octokit,
+    owner,
+    repo,
+    enabledBy.login,
+  );
+  return adminVerified
+    ? { requested: true, adminVerified: true }
+    : {
+        requested: true,
+        adminVerified: false,
+        skipReason: unsafeFixesAdminSkipMessage,
+      };
 };
 
 const logAutofixError = (
@@ -437,7 +487,7 @@ const handlePullRequestEvent = async (payload: PullRequestEvent): Promise<void> 
       context.repo,
     );
     const enableUnsafeFixes =
-      plan === "pro" ? unsafeFixesSetting.requested : false;
+      plan === "pro" && unsafeFixesSetting.requested && unsafeFixesSetting.adminVerified;
 
     console.info("autofix.start", {
       step: "autofix.start",
@@ -448,6 +498,7 @@ const handlePullRequestEvent = async (payload: PullRequestEvent): Promise<void> 
       plan,
       enableUnsafeFixes,
       unsafeFixesRequested: unsafeFixesSetting.requested,
+      unsafeFixesAdminVerified: unsafeFixesSetting.adminVerified,
     });
 
     const autofixResult = await runAutofix({
@@ -457,6 +508,7 @@ const handlePullRequestEvent = async (payload: PullRequestEvent): Promise<void> 
       headSha: context.headSha,
       commitMessage: "chore(autofix): python formatting",
       enableUnsafeFixes,
+      unsafeFixesSkipReason: unsafeFixesSetting.skipReason,
     });
 
     console.info("autofix.done", {

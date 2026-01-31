@@ -2,7 +2,8 @@
 
 Python Autofix Pro is a GitHub App that applies **Ruff** formatting and lint autofixes on pull requests and reports results as GitHub Checks.
 
-> ⚠️ **Review required:** The app may push a commit to the PR branch. Always review “Files changed” before merging.
+> ⚠️ Review recommended: When autofixes are applied, the app may push a commit
+to the pull request branch. Always review “Files changed” before merging.
 
 ## What it does
 

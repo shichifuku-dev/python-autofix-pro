@@ -76,5 +76,5 @@ export const listPullRequestFiles = async (
   return files.map((file) => file.filename);
 };
 
-export const containsPythonChanges = (files: string[]): boolean =>
-  files.some((file) => file.endsWith(".py"));
+export const getTargetPythonFiles = (files: string[]): string[] =>
+  files.filter((file) => file.endsWith(".py"));

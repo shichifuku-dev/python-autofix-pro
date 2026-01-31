@@ -12,7 +12,7 @@ import {
 import {
   extractPullRequestContext,
   listPullRequestFiles,
-  containsPythonChanges,
+  getTargetPythonFiles,
 } from "./github/pullRequests.js";
 import { getRepoSettingsFromIssue } from "./github/settingsIssue.js";
 import { runAutofix } from "./autofix/runner.js";
@@ -465,15 +465,24 @@ const handlePullRequestEvent = async (payload: PullRequestEvent): Promise<void> 
       context.repo,
       context.pullNumber,
     );
+    const targetFiles = getTargetPythonFiles(files);
 
-    if (!containsPythonChanges(files)) {
-      const summary = "Skipped: no Python changes.";
+    if (targetFiles.length === 0) {
+      const summary = "No target files found. Reporting success.";
+      console.info(summary, {
+        owner: context.owner,
+        repo: context.repo,
+        pullNumber: context.pullNumber,
+        headSha: context.headSha,
+        installationId,
+        action,
+      });
       await finalizeCheckRuns("success", {
         title: "Python Autofix Pro",
         summary,
         text: summary,
       });
-      result = "skipped_no_python";
+      result = "no_target_files";
       return;
     }
 
@@ -663,6 +672,52 @@ webhooks.on("pull_request", ({ payload }) => {
       error,
     });
   });
+});
+
+webhooks.on("push", ({ payload }) => {
+  void (async () => {
+    const installationId = payload.installation?.id;
+    const owner = payload.repository?.owner?.login ?? payload.repository?.owner?.name;
+    const repo = payload.repository?.name;
+    const headSha = payload.after;
+    if (!installationId || !owner || !repo || !headSha) {
+      console.warn("push payload missing required fields.");
+      return;
+    }
+
+    const files = (payload.commits ?? []).flatMap((commit) => [
+      ...(commit.added ?? []),
+      ...(commit.modified ?? []),
+      ...(commit.removed ?? []),
+    ]);
+    const summary =
+      getTargetPythonFiles(files).length === 0
+        ? "No target files found. Reporting success."
+        : "Push event received. Autofix runs on pull requests only.";
+
+    try {
+      const installationOctokit = await createInstallationOctokit(installationId);
+      await Promise.all(
+        (["CI/check", "CI/autofix"] as const).map((name) =>
+          createCheckRun(installationOctokit.octokit, {
+            owner,
+            repo,
+            name,
+            headSha,
+            installationId,
+            action: "push",
+            status: "completed",
+            conclusion: "success",
+            output: { title: "Python Autofix Pro", summary, text: summary },
+          }),
+        ),
+      );
+    } catch (error) {
+      console.error("push handler failed.", {
+        error: getErrorMessage(error),
+      });
+    }
+  })();
 });
 
 webhooks.on("check_suite", ({ payload }) => {

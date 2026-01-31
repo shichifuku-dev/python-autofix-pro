@@ -6,7 +6,7 @@ Python Autofix Pro is a GitHub App that applies **Ruff** formatting and lint aut
 
 ## What it does
 
-- Runs on pull request events and creates two GitHub Check Runs: **`CI/check`** and **`CI/autofix`**.
+- Runs on pull request and push events and creates two GitHub Check Runs: **`CI/check`** and **`CI/autofix`**.
 - Uses **Ruff** for formatting and lint autofixes.
 - When fixes are applied, it **pushes a commit to the PR branch** only.
 - Reports clear summaries even when no changes are made.
@@ -68,20 +68,40 @@ If unsafe fixes are not enabled and Ruff detects hidden fixes, the check summary
 - The app **only pushes commits to the PR branch** (never the default branch).
 - Checks are always reported, even when no Python files are changed.
 
-## Permissions required (high level)
+## Permissions
 
-The app needs permissions to:
+The app requests the minimum GitHub App permissions needed for its workflow:
 
-- Read pull requests and repository metadata.
-- Create and update GitHub Check Runs.
-- Push commits to PR branches when fixes are applied.
-- Read and update the settings issue in the repository.
+- **Checks: read & write** — create and update GitHub Check Runs.
+- **Contents: read & write** — clone the repository and push autofix commits to PR branches.
+- **Pull requests: read** — list PR files and metadata to decide when to run.
+- **Issues: read & write** — read/update the settings issue and post PR comments.
+- **Members: read** — verify repository admin status for unsafe-fix enablement.
+- **Metadata: read** — required by GitHub to access basic repository context.
+
+## Webhooks / Events
+
+- **pull_request** — on opened/synchronize/reopened/ready_for_review, the app inspects changed files, runs Ruff, and updates `CI/check` and `CI/autofix`. It posts a comment when fixes are applied or when checks fail.
+- **push** — the app creates check runs on the pushed commit and reports results; autofix is only applied via pull requests.
+- **check_suite** — used for logging and routing; the app defers to pull_request events for actual processing.
+
+## Behavior
+
+- The app analyzes files **only when Python files are present** in a pull request diff.
+- It **creates two checks** (`CI/check` and `CI/autofix`) for every supported event.
+- It **pushes a commit only to the PR branch** when autofixes are applied.
+- It **does nothing beyond reporting results** when:
+  - Only README/docs change,
+  - No Python files match the target rules, or
+  - All files are excluded by configuration.
+- **If no target files are found, the app still reports SUCCESS.**
+- **This means users do NOT need to remove the check from Required Checks.**
 
 > Permissions are intentionally scoped to GitHub App capabilities and do not include user tokens.
 
 ## Troubleshooting
 
-**“Skipped: no Python changes.”**
+**“No target files found. Reporting success.”**
 - The PR did not include Python file changes. The checks still complete successfully.
 
 **“ruff format failed.”**
@@ -109,10 +129,6 @@ The app needs permissions to:
 - This app **does not guarantee correctness**. It enforces formatting and linting only.
 - Always review changes before merging.
 - Keep unsafe fixes disabled unless you explicitly want them and understand the risk.
-
-## Development / Testing
-
-There is a temporary `PLAN_OVERRIDE=pro` environment variable used **for testing only**. It must be **removed before launch**.
 
 ## License / Contact
 

@@ -97,6 +97,8 @@ The app requests the minimum GitHub App permissions needed for its workflow:
   - All files are excluded by configuration.
 - **If no target files are found, the app still reports SUCCESS.**
 - **This means users do NOT need to remove the check from Required Checks.**
+- On push events, the app only reports check results and never modifies
+repository contents or branches.
 
 > Permissions are intentionally scoped to GitHub App capabilities and do not include user tokens.
 
